@@ -95,55 +95,56 @@ def search_music(data: dict):
 @app.get("/api/stream")
 def stream_audio(video_id: str, request: Request):
     try:
+        # Intentar múltiples formatos para saltar bloqueos
         ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
+            'format': 'bestaudio/best',
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
+            'nocheckcertificate': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web', 'mweb']}},
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
             audio_url = info.get("url")
             
-            if not audio_url and info.get('formats'):
-                audio_formats = [f for f in info['formats'] if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-                if audio_formats:
-                    audio_url = audio_formats[0].get('url')
-            
             if not audio_url:
                 raise HTTPException(status_code=500, detail="No audio URL found")
             
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            # Forzar headers de navegador para evitar 403
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com'
+            }
+            
             range_header = request.headers.get('Range')
             if range_header:
                 headers['Range'] = range_header
             
-            req = urllib.request.Request(audio_url, headers=headers)
-            response = urllib.request.urlopen(req)
+            # Usar requests para un streaming más estable que urllib
+            session = requests.Session()
+            resp = session.get(audio_url, headers=headers, stream=True, timeout=30)
             
             def iterfile():
-                while True:
-                    chunk = response.read(8192)
-                    if not chunk:
-                        break
-                    yield chunk
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if chunk:
+                        yield chunk
             
-            resp_headers = {}
-            if "Content-Range" in response.headers:
-                resp_headers["Content-Range"] = response.headers["Content-Range"]
-            if "Accept-Ranges" in response.headers:
-                resp_headers["Accept-Ranges"] = response.headers["Accept-Ranges"]
-            if "Content-Length" in response.headers:
-                resp_headers["Content-Length"] = response.headers["Content-Length"]
-            if "Content-Type" in response.headers:
-                resp_headers["Content-Type"] = response.headers["Content-Type"]
+            resp_headers = {
+                "Content-Type": resp.headers.get("Content-Type", "audio/mpeg"),
+                "Accept-Ranges": "bytes",
+            }
+            if "Content-Range" in resp.headers:
+                resp_headers["Content-Range"] = resp.headers["Content-Range"]
+            if "Content-Length" in resp.headers:
+                resp_headers["Content-Length"] = resp.headers["Content-Length"]
             
-            status_code = response.getcode()
-            
-            return StreamingResponse(iterfile(), status_code=status_code, headers=resp_headers)
+            return StreamingResponse(iterfile(), status_code=resp.status_code, headers=resp_headers)
             
     except Exception as e:
         print(f"Streaming error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Si falla el proxy, intentamos redirigir como última opción
+        return {"error": str(e)}

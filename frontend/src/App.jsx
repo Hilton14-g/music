@@ -20,8 +20,9 @@ function App() {
   const [view, setView] = useState('search');
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [isPlayerExpanded, setIsPlayerExpanded] = useState(false);
-  const [showVideo, setShowVideo] = useState(false);
+  const [useProxy, setUseProxy] = useState(false);
   const [seenIds, setSeenIds] = useState(new Set());
   const [seenTitles, setSeenTitles] = useState(new Set());
   const [skippedIds, setSkippedIds] = useState(new Set());
@@ -138,6 +139,7 @@ function App() {
     
     setLoading(true);
     setPage(1);
+    setHasMore(true);
     setView('search');
     const newSeenIds = new Set();
     const newSeenTitles = new Set();
@@ -146,6 +148,7 @@ function App() {
     try {
       const response = await axios.post(`${API_URL}/search`, { query: searchQuery, limit: 15, page: 1 });
       if (response.data.success) {
+        if (response.data.results.length === 0) setHasMore(false);
         for (const song of response.data.results) {
           const normalizedTitle = normalizeTitle(song.title);
           if (!newSeenIds.has(song.id) && !newSeenTitles.has(normalizedTitle)) {
@@ -169,45 +172,63 @@ function App() {
   };
 
   const loadMore = async () => {
-    if (loadingMore) return;
+    if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     const nextPage = page + 1;
     
     try {
       const response = await axios.post(`${API_URL}/search`, { query, limit: 15, page: nextPage });
       if (response.data.success) {
-        const newUnique = [];
-        const updatedSeenIds = new Set(seenIds);
-        const updatedSeenTitles = new Set(seenTitles);
-        
-        for (const song of response.data.results) {
-          const normalizedTitle = normalizeTitle(song.title);
-          if (!updatedSeenIds.has(song.id) && !updatedSeenTitles.has(normalizedTitle) && !skippedIds.has(song.id)) {
-            updatedSeenIds.add(song.id);
-            updatedSeenTitles.add(normalizedTitle);
-            newUnique.push(song);
+        const newSongs = response.data.results;
+        if (newSongs.length === 0) {
+          setHasMore(false);
+        } else {
+          const newUnique = [];
+          const updatedSeenIds = new Set(seenIds);
+          const updatedSeenTitles = new Set(seenTitles);
+          
+          for (const song of newSongs) {
+            const normalizedTitle = normalizeTitle(song.title);
+            if (!updatedSeenIds.has(song.id) && !updatedSeenTitles.has(normalizedTitle) && !skippedIds.has(song.id)) {
+              updatedSeenIds.add(song.id);
+              updatedSeenTitles.add(normalizedTitle);
+              newUnique.push(song);
+            }
           }
-        }
-        
-        if (newUnique.length > 0) {
+          
           setResults(prev => [...prev, ...newUnique]);
           setSeenIds(updatedSeenIds);
           setSeenTitles(updatedSeenTitles);
           setPage(nextPage);
-        } else {
-          console.log("No hay más canciones nuevas para cargar");
         }
       }
     } catch (error) { console.error(error); }
     finally { setLoadingMore(false); }
   };
 
+  useEffect(() => {
+    const handleScroll = () => {
+      if (window.innerHeight + document.documentElement.scrollTop + 100 >= document.documentElement.scrollHeight) {
+        if (!loading && !loadingMore && view === 'search' && !isOffline && query) {
+          loadMore();
+        }
+      }
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [loading, loadingMore, view, isOffline, query, page]);
+
   const playSong = (song) => {
     setCurrentSong(song);
     setDuration(song.duration || 0);
     setProgress(0);
     setIsPlaying(true);
-    setShowVideo(false);
+    setUseProxy(false); // Reset proxy on new song
+  };
+
+  const handleAudioError = () => {
+    console.log("Error en reproducción normal, activando proxy de bypass...");
+    setUseProxy(true);
   };
 
   const togglePlay = () => {
@@ -259,14 +280,14 @@ function App() {
 
   useEffect(() => {
     const timeout = setTimeout(() => {
-      if (currentSong && progress === 0 && isPlaying) {
-        console.log("Canción no se reproduce, pasando a la siguiente...");
-        playNext(); // Solo pasar a la siguiente, no ocultarla necesariamente
+      if (currentSong && progress === 0 && isPlaying && !useProxy) {
+        console.log("Canción bloqueada o no carga, activando bypass...");
+        handleAudioError();
       }
-    }, 10000);
+    }, 8000);
     
     return () => clearTimeout(timeout);
-  }, [currentSong, progress, isPlaying]);
+  }, [currentSong, progress, isPlaying, useProxy]);
 
   const handleSeek = (e) => {
     const time = parseFloat(e.target.value);
@@ -316,7 +337,7 @@ function App() {
         </div>
       )}
 
-      {currentSong && (
+      {currentSong && !useProxy && (
         <iframe
           key={currentSong.id}
           ref={iframeRef}
@@ -326,6 +347,21 @@ function App() {
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
           allowFullScreen
           title={currentSong.title}
+          onError={handleAudioError}
+        />
+      )}
+
+      {currentSong && useProxy && (
+        <audio
+          key={`proxy-${currentSong.id}`}
+          autoPlay={isPlaying}
+          src={`${API_URL}/stream?video_id=${currentSong.id}`}
+          onEnded={playNext}
+          onError={() => {
+            console.log("Bypass fallido, saltando canción...");
+            playNext();
+          }}
+          style={{ display: 'none' }}
         />
       )}
       
@@ -427,7 +463,7 @@ function App() {
             </div>
           )}
 
-          {view === 'search' && !isOffline && getFilteredResults().length > 0 && (
+          {view === 'search' && !isOffline && getFilteredResults().length > 0 && hasMore && (
             <div className="load-more-container">
               <button className="load-more-btn" onClick={loadMore} disabled={loadingMore}>
                 {loadingMore ? (
@@ -436,7 +472,7 @@ function App() {
                     <span>Cargando más música...</span>
                   </>
                 ) : (
-                  <span>Ver más música</span>
+                  <span>Desliza para ver más</span>
                 )}
               </button>
             </div>
