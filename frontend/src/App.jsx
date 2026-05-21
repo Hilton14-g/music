@@ -48,22 +48,36 @@ function App() {
     window.addEventListener('online', handleStatus);
     window.addEventListener('offline', handleStatus);
     loadSavedSongs();
+    
+    if (navigator.onLine) {
+      // Búsqueda inicial para que no se vea vacío
+      performSearch("lo mas escuchado 2026");
+    }
+
+    // Auto-hide intro after 3.5 seconds
+    const introTimeout = setTimeout(() => {
+      setShowIntro(false);
+    }, 3500);
 
     return () => {
       window.removeEventListener('online', handleStatus);
       window.removeEventListener('offline', handleStatus);
       clearTimeout(searchTimeoutRef.current);
+      clearTimeout(introTimeout);
     };
   }, []);
 
   useEffect(() => {
-    if (!query || query.length < 2) {
+    // Solo borrar resultados si el usuario borra manualmente una búsqueda existente
+    if (query === '' && results.length > 0 && view === 'search') {
       setResults([]);
       setSeenIds(new Set());
       setSeenTitles(new Set());
       setSkippedIds(new Set());
       return;
     }
+
+    if (!query || query.length < 2) return;
 
     clearTimeout(searchTimeoutRef.current);
     
@@ -305,7 +319,7 @@ function App() {
     <div className={`app-container ${isOffline ? 'offline' : ''}`}>
       
       {showIntro && (
-        <div className="intro-screen">
+        <div className="intro-screen" onClick={() => setShowIntro(false)} style={{ cursor: 'pointer' }}>
           <div className="intro-logo">
             <Music color="#ff0050" size={80} />
             <h1>TuMusic</h1>
@@ -365,7 +379,7 @@ function App() {
         />
       )}
       
-      <div className={`youtube-player-container ${isPlayerExpanded ? 'expanded' : ''} ${!showVideo ? 'hidden' : ''}`}>
+      <div className={`youtube-player-container ${isPlayerExpanded ? 'expanded' : ''} ${!currentSong ? 'hidden' : ''}`}>
         <div className="player-header">
           <button className="player-header-btn" onClick={() => setIsPlayerExpanded(!isPlayerExpanded)} title={isPlayerExpanded ? "Minimizar" : "Pantalla Completa"}>
             {isPlayerExpanded ? <div style={{width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center'}}>⊟</div> : <div style={{width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center'}}>⛶</div>}
@@ -427,7 +441,12 @@ function App() {
           </h2>
           
           <div className="results-grid">
-            {getFilteredResults().map((song) => (
+            {loading && getFilteredResults().length === 0 ? (
+              <div className="loading-spinner" style={{ gridColumn: '1/-1' }}>
+                <Loader2 className="animate-spin" size={48} color="#ff0050" />
+                <p>Buscando la mejor música...</p>
+              </div>
+            ) : getFilteredResults().length > 0 ? getFilteredResults().map((song) => (
               <div key={song.id} className={`song-card ${currentSong?.id === song.id ? 'active' : ''}`} onClick={() => playSong(song)}>
                 <div className="thumbnail-container">
                   <img src={song.thumbnail} alt={song.title} />
@@ -446,20 +465,18 @@ function App() {
                   </div>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="empty-state" style={{ gridColumn: '1/-1' }}>
+                <Music size={64} />
+                <p>{query ? `No encontramos resultados para "${query}"` : "Busca tus canciones favoritas o artistas"}</p>
+              </div>
+            )}
           </div>
 
-          {loading && (
+          {loading && getFilteredResults().length > 0 && (
             <div className="loading-spinner">
               <Loader2 className="animate-spin" size={48} color="#ff0050" />
-              <p>Buscando la mejor música...</p>
-            </div>
-          )}
-
-          {!loading && view === 'search' && !isOffline && getFilteredResults().length === 0 && query && (
-            <div className="empty-state">
-              <Music size={64} />
-              <p>No encontramos resultados para "{query}"</p>
+              <p>Buscando más música...</p>
             </div>
           )}
 
